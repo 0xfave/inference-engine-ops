@@ -38,7 +38,7 @@ pub async fn load(repo_id: &str) -> Result<ModelExecutor> {
 
     let vb = unsafe { VarBuilder::from_mmaped_safetensors(&[model_path], dtype, &device)? };
 
-    let cache = Cache::new(false, dtype, &config, &device)?;
+    let cache = Cache::new(true, dtype, &config, &device)?;
     let model = Llama::load(vb, &config)?;
 
     let tokenizer = Tokenizer::from_file(tokenizer_path).map_err(anyhow::Error::msg)?;
@@ -130,6 +130,7 @@ impl ModelExecutor {
         let prompt_time = prompt_start.elapsed();
         all_tokens.push(next_token);
 
+        // Emit first token
         if let Some(t) = stream.next_token(next_token)? {
             print!("{t}");
             std::io::stdout().flush()?;
@@ -137,9 +138,10 @@ impl ModelExecutor {
 
         let gen_start = std::time::Instant::now();
         let mut generated = 1;
-        for _index in 1..max_tokens {
-            let input = Tensor::new(all_tokens.as_slice(), &self.device)?.unsqueeze(0)?;
-            let logits = self.model.forward(&input, 0, &mut self.cache)?;
+        for index in 1..max_tokens {
+            // Subsequent steps: only the new token (cache handles the rest)
+            let input = Tensor::new(&[next_token], &self.device)?.unsqueeze(0)?;
+            let logits = self.model.forward(&input, tokens.len() + index, &mut self.cache)?;
             let logits = logits.squeeze(0)?;
 
             next_token = logits_processor.sample(&logits)?;
@@ -156,11 +158,6 @@ impl ModelExecutor {
             }
         }
         let gen_time = gen_start.elapsed();
-
-        if let Some(rest) = stream.decode_rest()? {
-            print!("{rest}");
-            std::io::stdout().flush()?;
-        }
 
         let output = self
             .tokenizer

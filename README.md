@@ -1,43 +1,100 @@
-# Rust Template [![Github Actions][gha-badge]][gha] [![License: MIT][license-badge]][license]
+# inference-engine-ops
 
-[gha]: https://github.com/PaulRBerg/rust-template/actions
-[gha-badge]: https://github.com/PaulRBerg/rust-template/actions/workflows/ci.yml/badge.svg
-[license]: https://opensource.org/licenses/MIT
-[license-badge]: https://img.shields.io/badge/License-MIT-blue.svg
+A Rust-native LLM inference server built from scratch — continuous batching, KV cache management, semantic caching, and quantization benchmarking, with every optimization measured and documented. Not a wrapper around vLLM; an implementation of what vLLM does internally.
 
-A template for developing Rust projects, with sensible defaults.
+**Status:** 🚧 In development — M0 (baseline single-request serving)
 
-## Getting Started
+## Why this exists
 
-Click the [`Use this template`](https://github.com/PaulRBerg/rust-template/generate) button at the top of the page to
-create a new repository with this repo as the initial state.
+Most portfolio LLM projects call an API and call it a day. This one answers a narrower, harder question: what actually happens between "a request comes in" and "tokens stream out," and how do you make that fast and cheap under concurrent load — without touching the model itself.
 
-## Features
+## Headline results
 
-### Sensible Defaults
+*(filled in as milestones complete — see [docs/BENCHMARKS.md](docs/BENCHMARKS.md))*
 
-This template comes with sensible default configurations in the following files:
+| Metric | Baseline | Optimized | Source |
+|---|---|---|---|
+| Throughput (req/sec) | TBD | TBD | `docs/BENCHMARKS.md` |
+| Latency (TTFT) | TBD | TBD | `docs/BENCHMARKS.md` |
+| GPU cost / 1k tokens | TBD | TBD | `docs/BENCHMARKS.md` |
+| Cache hit rate | — | TBD | `docs/BENCHMARKS.md` |
 
-```text
-├── .editorconfig
-├── .gitignore
-├── .prettierrc.yml
-├── Cargo.toml
-├── justfile
-└── rustfmt.toml
+## Architecture
+
+```
+Client → Axum HTTP layer → Request validator → Scheduler/Batcher (in-process)
+                                                      ↓
+                                        Semantic cache check (Redis)
+                                              ↓ (miss)
+                                        KV cache manager ← → Model executor (Candle)
+                                                      ↓
+                                        Token stream (SSE) → Client
+                                                      ↓
+                                        Metrics → Prometheus → Grafana
 ```
 
-### GitHub Actions
+Full design rationale in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-This template comes with GitHub Actions pre-configured. Your code will be linted and tested on every push and pull
-request made to the `main` branch.
+## Components
 
-You can edit the CI script in [.github/workflows/ci.yml](./.github/workflows/ci.yml).
+| Component | What it does | Design doc |
+|---|---|---|
+| HTTP layer | OpenAI-compatible `/v1/chat/completions`, streaming via SSE | — |
+| Scheduler | Continuous batching — requests join/leave a batch mid-flight | `docs/BATCHING_DESIGN.md` |
+| KV cache manager | Naive → paged block-based cache allocation | `docs/KV_CACHE_DESIGN.md` |
+| Semantic cache | Redis-backed similarity match, skips redundant model calls | — |
+| Quantization bench | FP16 vs GGUF Q4/Q8 comparison, real numbers | `docs/BENCHMARKS.md` |
+| Observability | Prometheus (TTFT, TPOT, queue depth, cache hit rate) + Grafana | — |
+| Load testing | k6/vegeta concurrent load simulation | `load_test/` |
 
-## Usage
+## Quick start
 
-See [The Rust Book](https://doc.rust-lang.org/book/) and [The Cargo Book](https://doc.rust-lang.org/cargo/index.html).
+```bash
+# Clone and build
+git clone https://github.com/0xfave/inference-engine-ops.git
+cd inference-engine-ops
+cargo build --release
+
+# Run the server (single model, CPU or CUDA feature flag)
+cargo run --release --features cuda -- --model ./models/<model> --port 8080
+
+# Talk to it
+curl http://localhost:8080/health
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"local","messages":[{"role":"user","content":"Hi"}],"stream":true}'
+```
+
+## Repo structure
+
+```
+inference-engine-ops/
+├── src/
+│   ├── api/            # Axum routes, request/response types
+│   ├── scheduler/       # continuous batching loop
+│   ├── kv_cache/        # naive.rs, paged.rs
+│   ├── model/           # Candle model executor wrapper
+│   ├── cache/           # Redis semantic cache
+│   └── metrics/         # Prometheus instrumentation
+├── benches/             # quantization + throughput benchmarks
+├── load_test/           # k6/vegeta scripts
+├── docs/                # architecture + design docs, sourced benchmarks
+└── docker/
+```
+
+## Tech stack
+
+Rust · Axum · Tokio · Candle · Redis · Prometheus · Grafana · Docker
+
+## Non-goals (v1)
+
+Multi-model serving, SGLang/TensorRT-LLM integration, autoscaling, billing simulation, A/B testing, canary deploys, Kubernetes, agent orchestration. See [docs/PRD.md](docs/PRD.md#non-goals) for rationale.
+
+## Writeups
+
+- Dev phase (architecture, batching/cache design decisions) — *coming soon*
+- Prod phase (AWS deploy, cost analysis) — *coming soon*
 
 ## License
 
-This project is licensed under MIT.
+MIT
